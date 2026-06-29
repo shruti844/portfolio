@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive Hand Particles</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; }
+        #video-container { position: absolute; bottom: 10px; right: 10px; width: 200px; border: 2px solid #333; transform: scaleX(-1); }
+        canvas { display: block; }
+        #instructions { position: absolute; top: 10px; left: 10px; color: white; font-family: sans-serif; pointer-events: none; }
+    </style>
+</head>
+<body>
+
+    <div id="instructions">
+        <h2>Hand Gesture Particles</h2>
+        <p>Pinch = Contract | Open Palm = Expand/Change Shape</p>
+    </div>
+    <video id="video-container" autoplay></video>
+
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // --- 1. THREE.JS SETUP ---
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        const particleCount = 15000;
+        const geometry = new THREE.BufferGeometry();
+        
+        // Storage for different shapes
+        const positions = new Float32Array(particleCount * 3);
+        const heartPos = new Float32Array(particleCount * 3);
+        const saturnPos = new Float32Array(particleCount * 3);
+        const flowerPos = new Float32Array(particleCount * 3);
+
+        for (let i = 0; i < particleCount; i++) {
+            const i3 = i * 3;
+            
+            // Random Cloud (Base)
+            positions[i3] = (Math.random() - 0.5) * 10;
+            positions[i3 + 1] = (Math.random() - 0.5) * 10;
+            positions[i3 + 2] = (Math.random() - 0.5) * 10;
+
+            // Heart
+            const t = Math.random() * Math.PI * 2;
+            heartPos[i3] = 16 * Math.pow(Math.sin(t), 3) * 0.15;
+            heartPos[i3 + 1] = (13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t)) * 0.15;
+            heartPos[i3 + 2] = (Math.random() - 0.5) * 0.5;
+
+            // Saturn (Sphere + Rings)
+            if (i < particleCount * 0.6) {
+                const u = Math.random(), v = Math.random();
+                const theta = 2 * Math.PI * u, phi = Math.acos(2 * v - 1);
+                saturnPos[i3] = 1.5 * Math.sin(phi) * Math.cos(theta);
+                saturnPos[i3 + 1] = 1.5 * Math.sin(phi) * Math.sin(theta);
+                saturnPos[i3 + 2] = 1.5 * Math.cos(phi);
+            } else {
+                const angle = Math.random() * Math.PI * 2;
+                const r = 2.2 + Math.random() * 0.8;
+                saturnPos[i3] = Math.cos(angle) * r;
+                saturnPos[i3 + 1] = Math.sin(angle) * r * 0.2;
+                saturnPos[i3 + 2] = Math.sin(angle) * r;
+            }
+
+            // Flower (Rose curve)
+            const k = 5; 
+            const angle = Math.random() * Math.PI * 2;
+            const radius = 2 * Math.cos(k * angle);
+            flowerPos[i3] = Math.cos(angle) * radius;
+            flowerPos[i3 + 1] = Math.sin(angle) * radius;
+            flowerPos[i3 + 2] = (Math.random() - 0.5) * 0.2;
+        }
+
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        geometry.setAttribute('targetHeart', new THREE.BufferAttribute(heartPos, 3));
+        geometry.setAttribute('targetSaturn', new THREE.BufferAttribute(saturnPos, 3));
+        geometry.setAttribute('targetFlower', new THREE.BufferAttribute(flowerPos, 3));
+
+        // Shader Material for smooth morphing
+        const material = new THREE.ShaderMaterial({
+            uniforms: {
+                uTime: { value: 0 },
+                uMorph: { value: 0 }, // 0: Heart, 1: Saturn, 2: Flower
+                uColor: { value: new THREE.Color(0x00ffff) },
+                uPinch: { value: 0 } // Contraction factor
+            },
+            vertexShader: `
+                uniform float uMorph;
+                uniform float uPinch;
+                attribute vec3 targetHeart;
+                attribute vec3 targetSaturn;
+                attribute vec3 targetFlower;
+                void main() {
+                    vec3 target;
+                    if (uMorph < 1.0) target = mix(targetHeart, targetSaturn, uMorph);
+                    else target = mix(targetSaturn, targetFlower, uMorph - 1.0);
+                    
+                    // Interaction: pinch pulls particles to center
+                    vec3 finalPos = mix(target, vec3(0.0), uPinch);
+                    
+                    vec4 mvPosition = modelViewMatrix * vec4(finalPos, 1.0);
+                    gl_PointSize = 4.0 * (1.0 / -mvPosition.z);
+                    gl_Position = projectionMatrix * mvPosition;
+                }
+            `,
+            fragmentShader: `
+                uniform vec3 uColor;
+                void main() {
+                    if (length(gl_PointCoord - vec2(0.5)) > 0.5) discard;
+                    gl_FragColor = vec4(uColor, 1.0);
+                }
+            `,
+            transparent: true,
+            blending: THREE.AdditiveBlending
+        });
+
+        const points = new THREE.Points(geometry, material);
+        scene.add(points);
+        camera.position.z = 5;
+
+        // --- 2. MEDIAPIPE HANDS SETUP ---
+        const videoElement = document.getElementById('video-container');
+        let currentShapeIdx = 0;
+
+        const onResults = (results) => {
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const hand = results.multiHandLandmarks[0];
+                
+                // Track Index and Thumb Tip
+                const thumb = hand[4];
+                const index = hand[8];
+                const dist = Math.sqrt(Math.pow(thumb.x - index.x, 2) + Math.pow(thumb.y - index.y, 2));
+
+                // 1. Control Pinching (Contraction)
+                material.uniforms.uPinch.value = THREE.MathUtils.lerp(material.uniforms.uPinch.value, dist < 0.05 ? 1.0 : 0.0, 0.1);
+
+                // 2. Change Color based on hand position
+                material.uniforms.uColor.value.setHSL(hand[0].x, 1.0, 0.5);
+
+                // 3. Cycle Shapes on high-velocity or open palm (Simplified logic)
+                if (dist > 0.3) { 
+                    currentShapeIdx = (currentShapeIdx + 0.01) % 2; 
+                }
+                material.uniforms.uMorph.value = THREE.MathUtils.lerp(material.uniforms.uMorph.value, currentShapeIdx, 0.05);
+
+                // 4. Rotate based on wrist
+                points.rotation.y = (hand[0].x - 0.5) * 4;
+                points.rotation.x = (hand[0].y - 0.5) * 4;
+            }
+        };
+
+        const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+        hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.7 });
+        hands.onResults(onResults);
+
+        const cameraFeed = new Camera(videoElement, {
+            onFrame: async () => { await hands.send({image: videoElement}); },
+            width: 640, height: 480
+        });
+        cameraFeed.start();
+
+        // --- 3. RENDER LOOP ---
+        function animate() {
+            requestAnimationFrame(animate);
+            material.uniforms.uTime.value += 0.01;
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>
